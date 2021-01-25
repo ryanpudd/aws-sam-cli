@@ -133,8 +133,8 @@ class LambdaUri:
         if matches:
             return matches.group(1)  # First match is the whole string
 
-        LOG.debug("Ignoring Integration URI because it is not a Lambda Function integration: %s", uri_data)
-        return None
+            LOG.debug("Ignoring Integration URI because it is not a Lambda Function integration: %s", uri_data)
+            return None
 
     @staticmethod
     def _get_function_name_from_arn(function_arn):
@@ -284,3 +284,9 @@ class IntegrationType(Enum):
 
     # Mainly used if someone specifies CORS response in Swagger
     mock = "mock"
+
+
+class AuthorizerType(Enum):
+    token = "token"
+
+    request = "request"

@@ -153,15 +153,13 @@ class ApiCollector:
             key = "{}-{}".format(route.function_name, route.path)
             config = grouped_routes.get(key, None)
             methods = route.methods
+            authorizers = route.authorizers
             if config:
                 methods += config.methods
+                authorizers += config.authorizers
             sorted_methods = sorted(methods)
             grouped_routes[key] = Route(
-                function_name=route.function_name,
-                path=route.path,
-                methods=sorted_methods,
-                event_type=route.event_type,
-                payload_format_version=route.payload_format_version,
+                function_name=route.function_name, path=route.path, methods=sorted_methods, authorizers=authorizers
             )
         return list(grouped_routes.values())
 

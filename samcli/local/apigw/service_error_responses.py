@@ -8,6 +8,7 @@ class ServiceErrorResponses:
     _NO_LAMBDA_INTEGRATION = {"message": "No function defined for resource method"}
     _MISSING_AUTHENTICATION = {"message": "Missing Authentication Token"}
     _LAMBDA_FAILURE = {"message": "Internal server error"}
+    _UNAUTHORIZED = {"message": "Unauthorized"}
 
     HTTP_STATUS_CODE_502 = 502
     HTTP_STATUS_CODE_403 = 403
@@ -41,4 +42,15 @@ class ServiceErrorResponses:
         :return: a Flask Response
         """
         response_data = jsonify(ServiceErrorResponses._MISSING_AUTHENTICATION)
+        return make_response(response_data, ServiceErrorResponses.HTTP_STATUS_CODE_403)
+
+    @staticmethod
+    def unauthorized(*args):
+        """
+        Constructs a Flask Response for when a API Authorizer Lambda returns a Deny response
+        HTTP 404 but with API Gateway this is a HTTP 403 (https://forums.aws.amazon.com/thread.jspa?threadID=2166840)
+
+        :return: a Flask Response
+        """
+        response_data = jsonify(ServiceErrorResponses._UNAUTHORIZED)
         return make_response(response_data, ServiceErrorResponses.HTTP_STATUS_CODE_403)

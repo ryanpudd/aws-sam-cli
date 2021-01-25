@@ -89,6 +89,33 @@ class TestSwaggerParser_get_apis(TestCase):
 
         self.assertEqual(expected, result)
 
+    def test_security_scheme_configured(self):
+        api_function_name = "myfunction"
+        auth_function_name = "authfunction"
+        swagger = {
+            "paths": {"/path1": {"get": {"x-amazon-apigateway-integration": {"type": "aws_proxy", "uri": "someuri"}, "security": [{ "customAuthorizer": [] }]}}},
+            "components": { "securitySchemes": { "customAuthorizer": { "x-amazon-apigateway-authorizer": { "type": "request", "authorizerUri": "someuri" }}}},
+        }
+
+        parser = SwaggerParser(swagger)
+        parser._get_integration_function_name = Mock()
+        parser._get_integration_function_name.return_value = api_function_name
+        parser._get_authorizer_function_name = Mock()
+        parser._get_authorizer_function_name.return_value = auth_function_name
+
+        expected = [Route(path="/path1", methods=["get"], function_name=api_function_name, authorizers=[auth_function_name])]
+        result = parser.get_routes()
+
+        self.assertEqual(expected, result)
+        parser._get_authorizer_function_name.assert_called_with(
+            { "x-amazon-apigateway-authorizer": { "type": "request", "authorizerUri": "someuri" }})
+
+    def test_multiple_security_scheme_configured(self):
+        pass
+    
+    def test_security_scheme_does_not_have_function_name(self):
+        pass
+
     def test_payload_format_version(self):
         function_name = "myfunction"
         swagger = {
@@ -141,6 +168,45 @@ class TestSwaggerParser_get_apis(TestCase):
 
         expected = []
         self.assertEqual(expected, result)
+
+class TestSwaggerParser_get_authorizer_function_name(TestCase):
+    @parameterized.expand(
+        [
+            param("authorizer is type token","token"),
+            param("authorizer is type request","request"),
+        ]
+    )
+    @patch("samcli.commands.local.lib.swagger.parser.LambdaUri")
+    def test_valid_authorizer(self, test_case_name, auth_type, LambdaUriMock):
+        function_name = "name"
+        LambdaUriMock.get_function_name.return_value = function_name
+
+        scheme_config = {"x-amazon-apigateway-authorizer": { "type": auth_type, "authorizerUri": "someuri" }}
+
+        parser = SwaggerParser({})
+        result = parser._get_authorizer_function_name(scheme_config)
+
+        self.assertEqual(function_name, result)
+        LambdaUriMock.get_function_name.assert_called_with("someuri")
+
+    @parameterized.expand(
+        [
+            param("config is not dict", "myconfig"),
+            param("authorizer key is not in config", {"key": "value"}),
+            param("authorizer value is empty", {"x-amazon-apigateway-authorizer": {}}),
+            param("authorizer value is not dict", {"x-amazon-apigateway-authorizer": "someval"}),
+            param("authorizer type is not supported", {"x-amazon-apigateway-authorizer": {"type": "mock"}}),
+            param("authorizer uri is not present", {"x-amazon-apigateway-authorizer": {"type": "request"}}),
+        ]
+    )
+    @patch("samcli.commands.local.lib.swagger.parser.LambdaUri")
+    def test_invalid_integration(self, test_case_name, method_config, LambdaUriMock):
+        LambdaUriMock.get_function_name.return_value = None
+
+        parser = SwaggerParser({})
+        result = parser._get_authorizer_function_name(method_config)
+
+        self.assertIsNone(result, "must not parse invalid integration")
 
 
 class TestSwaggerParser_get_integration_function_name(TestCase):

@@ -19,6 +19,7 @@ from samcli.local.events.api_event import (
     RequestContextV2,
     ApiGatewayLambdaEvent,
     ApiGatewayV2LambdaEvent,
+    ApiGatewayAuthRequestEvent,
 )
 from .service_error_responses import ServiceErrorResponses
 from .path_converter import PathConverter
@@ -38,7 +39,14 @@ class Route:
     ANY_HTTP_METHODS = ["GET", "DELETE", "PUT", "POST", "HEAD", "OPTIONS", "PATCH"]
 
     def __init__(
-        self, function_name, path, methods, event_type=API, payload_format_version=None, is_default_route=False
+        self,
+        function_name,
+        path,
+        methods,
+        event_type=API,
+        payload_format_version=None,
+        is_default_route=False,
+        authorizers=None,
     ):
         """
         Creates an ApiGatewayRoute
@@ -49,6 +57,7 @@ class Route:
         :param str event_type: Type of the event. "Api" or "HttpApi"
         :param str payload_format_version: version of payload format
         :param bool is_default_route: determines if the default route or not
+        :param list(dict) authorizers:
         """
         self.methods = self.normalize_method(methods)
         self.function_name = function_name
@@ -56,6 +65,7 @@ class Route:
         self.event_type = event_type
         self.payload_format_version = payload_format_version
         self.is_default_route = is_default_route
+        self.authorizers = authorizers or []
 
     def __eq__(self, other):
         return (
@@ -293,6 +303,52 @@ class LocalApigwService(BaseLocalService):
         stdout_stream = io.BytesIO()
         stdout_stream_writer = StreamWriter(stdout_stream, self.is_debugging)
 
+        # TODO - Migrate security handling to another function
+        if len(route.authorizers) > 0:
+            try:
+                auth_event = self._construct_auth_event(
+                    request,
+                    self.port,
+                    self.api.binary_media_types,
+                    self.lambda_runner.aws_region,
+                    self.api.stage_name,
+                    self.api.stage_variables,
+                )
+            except UnicodeDecodeError:
+                return ServiceErrorResponses.lambda_failure_response()
+
+            authorizer_response = None
+            try:
+                for authorizer in route.authorizers:
+                    for name, auth_function_name in authorizer.items():
+                        self.lambda_runner.invoke(
+                            auth_function_name, auth_event, stdout=stdout_stream_writer, stderr=self.stderr
+                        )
+                        # TODO Build context for lambda run
+                        # TODO Merge results
+                        authorizer_response, lambda_logs, _ = LambdaOutputParser.get_lambda_output(stdout_stream)
+                        if self.stderr and lambda_logs:
+                            # Write the logs to stderr if available.
+                            self.stderr.write(lambda_logs)
+
+                        try:
+                            authorizer_response_json = json.loads(authorizer_response)
+                        except ValueError:
+                            LOG.error(f"Lambda response must be valid json: {authorizer_response}")
+                            return ServiceErrorResponses.lambda_failure_response()
+
+                        # TODO - Move to a function? - maybe this whole block?
+                        policy_doc = authorizer_response_json.get("policyDocument", {})
+                        policy_statements = policy_doc.get("Statement", [])
+                        for statement in policy_statements:
+                            if statement.get("Effect", "Deny") == "Deny":
+                                return ServiceErrorResponses.unauthorized()
+            except FunctionNotFound:
+                return ServiceErrorResponses.lambda_not_found_response()
+
+        stdout_stream = io.BytesIO()
+        stdout_stream_writer = StreamWriter(stdout_stream, self.is_debugging)
+
         try:
             self.lambda_runner.invoke(route.function_name, event, stdout=stdout_stream_writer, stderr=self.stderr)
         except FunctionNotFound:
@@ -369,7 +425,7 @@ class LocalApigwService(BaseLocalService):
         try:
             json_output = json.loads(lambda_output)
         except ValueError as ex:
-            raise LambdaResponseParseException("Lambda response must be valid json") from ex
+            raise LambdaResponseParseException(f"Lambda response must be valid json: {lambda_output}") from ex
 
         if not isinstance(json_output, dict):
             raise LambdaResponseParseException(f"Lambda returned {type(json_output)} instead of dict")
@@ -428,7 +484,7 @@ class LocalApigwService(BaseLocalService):
         try:
             json_output = json.loads(lambda_output)
         except ValueError as ex:
-            raise LambdaResponseParseException("Lambda response must be valid json") from ex
+            raise LambdaResponseParseException(f"Lambda response must be valid json: {lambda_output}") from ex
 
         # lambda can return any valid json response in payload format version 2.0.
         # response can be a simple type like string, or integer
@@ -664,6 +720,72 @@ class LocalApigwService(BaseLocalService):
         event_str = json.dumps(event.to_dict())
         LOG.debug("Constructed String representation of Event Version 2.0 to invoke Lambda. Event: %s", event_str)
         return event_str
+
+    @staticmethod
+    def _construct_auth_event(flask_request, port, binary_types, aws_region, stage_name=None, stage_variables=None):
+        """
+        Helper method that constructs the Event to be passed to Lambda
+
+        :param request flask_request: Flask Request
+        :return: String representing the event
+        """
+        # TODO - Support TOKEN auth
+        # TODO - Make more use of functions rather than repeated code
+
+        identity = ContextIdentity(source_ip=flask_request.remote_addr)
+
+        endpoint = PathConverter.convert_path_to_api_gateway(flask_request.endpoint)
+        method = flask_request.method
+        protocol = flask_request.environ.get("SERVER_PROTOCOL", "HTTP/1.1")
+        host = flask_request.host
+
+        context = RequestContext(
+            resource_path=endpoint,
+            http_method=method,
+            stage=stage_name,
+            identity=identity,
+            path=endpoint,
+            protocol=protocol,
+            domain_name=host,
+        )
+
+        # pylint: disable-msg=unused-variable
+        headers_dict, multi_value_headers_dict = LocalApigwService._event_headers(flask_request, port)
+        # pylint: disable-msg=unused-variable
+        query_string_dict, multi_value_query_string_dict = LocalApigwService._query_string_params(flask_request)
+
+        method_arn = LocalApigwService._method_arn(context, aws_region)
+
+        event = ApiGatewayAuthRequestEvent(
+            http_method=method,
+            method_arn=method_arn,
+            resource=endpoint,
+            request_context=context,
+            query_string_params=query_string_dict,
+            headers=headers_dict,
+            path_parameters=flask_request.view_args,
+            path=flask_request.path,
+            stage_variables=stage_variables,
+        )
+
+        event_str = json.dumps(event.to_dict())
+        LOG.debug(
+            "Constructed String representation of Authorizer Event to invoke Authorizer Lambda. Event: %s", event_str
+        )
+        return event_str
+
+    @staticmethod
+    def _method_arn(request_context, aws_region):
+        """
+        Constructs a method ARN based on the request context
+
+        Parameters
+        ----------
+        request_context generated RequestContext
+
+        Returns string ARN
+        """
+        return f"arn:aws:execute-api:{aws_region}:{request_context.account_id}:{request_context.api_id}/{request_context.stage}/{request_context.http_method}{request_context.path}"
 
     @staticmethod
     def _query_string_params(flask_request):

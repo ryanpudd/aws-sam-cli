@@ -2,7 +2,7 @@
 
 import logging
 
-from samcli.commands.local.lib.swagger.integration_uri import LambdaUri, IntegrationType
+from samcli.commands.local.lib.swagger.integration_uri import LambdaUri, IntegrationType, AuthorizerType
 from samcli.local.apigw.local_apigw_service import Route
 
 LOG = logging.getLogger(__name__)
@@ -10,6 +10,7 @@ LOG = logging.getLogger(__name__)
 
 class SwaggerParser:
     _INTEGRATION_KEY = "x-amazon-apigateway-integration"
+    _AUTHORIZER_KEY = "x-amazon-apigateway-authorizer"
     _ANY_METHOD_EXTENSION_KEY = "x-amazon-apigateway-any-method"
     _BINARY_MEDIA_TYPES_EXTENSION_KEY = "x-amazon-apigateway-binary-media-types"  # pylint: disable=C0103
     _ANY_METHOD = "ANY"
@@ -68,11 +69,19 @@ class SwaggerParser:
 
         result = []
         paths_dict = self.swagger.get("paths", {})
+        components_dict = self.swagger.get("components", {})
+        security_dict = components_dict.get("securitySchemes", {})
 
         for full_path, path_config in paths_dict.items():
             for method, method_config in path_config.items():
 
                 function_name = self._get_integration_function_name(method_config)
+                # TODO - Rewrite
+                authorizers = [
+                    {name: self._get_authorizer_function_name(security_dict[name]) for name, values in auth.items()}
+                    for auth in method_config.get("security", [])
+                ]
+
                 if not function_name:
                     LOG.debug(
                         "Lambda function integration not found in Swagger document at path='%s' method='%s'",
@@ -91,6 +100,7 @@ class SwaggerParser:
                     methods=[method],
                     event_type=event_type,
                     payload_format_version=payload_format_version,
+                    authorizers=authorizers,
                 )
                 result.append(route)
         return result
@@ -165,3 +175,39 @@ class SwaggerParser:
             return None
 
         return integration.get("payloadFormatVersion")
+
+    def _get_authorizer_function_name(self, scheme_config):
+        """
+        Tries to parse the Lambda Function name from the authorizer defined in the method configuration.
+        authorizer configuration is defined under the special "x-amazon-apigateway-authorizer" key. We care only
+        about Lambda authorizers, which are of type aws_proxy, and ignore the rest. authorizer URI is complex and
+        hard to parse. Hence we do our best to extract function name out of authorizer URI. If not possible, we
+        return None.
+
+        Parameters
+        ----------
+        scheme_config : dict
+            Dictionary containing the security scheme configuration which might contain integration settings
+
+        Returns
+        -------
+        string or None
+            Lambda function name, if possible. None, if not.
+        """
+        if not isinstance(scheme_config, dict) or self._AUTHORIZER_KEY not in scheme_config:
+            return None
+
+        authorizer = scheme_config[self._AUTHORIZER_KEY]
+
+        if (
+            authorizer
+            and isinstance(authorizer, dict)
+            and (
+                authorizer.get("type") == AuthorizerType.token.value
+                or authorizer.get("type") == AuthorizerType.request.value
+            )
+        ):
+            # authorizer must be "request" or "token" otherwise we don't care about it
+            return LambdaUri.get_function_name(authorizer.get("authorizerUri"))
+
+        return None

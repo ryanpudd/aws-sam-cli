@@ -413,3 +413,78 @@ class ApiGatewayV2LambdaEvent:
         }
 
         return json_dict
+
+
+class ApiGatewayAuthRequestEvent:
+    def __init__(
+        self,
+        http_method=None,
+        method_arn=None,
+        resource=None,
+        request_context=None,
+        query_string_params=None,
+        headers=None,
+        path_parameters=None,
+        stage_variables=None,
+        path=None,
+    ):
+        """
+        Constructs an ApiGatewayLambdaEvent
+
+        :param str http_method: HTTPMethod of the request
+        :param str methodArn: Method ARN for the request
+        :param str resource: Resource for the request
+        :param RequestContext request_context: RequestContext for the request
+        :param dict query_string_params: Query String parameters
+        :param dict headers: dict of the request Headers
+        :param dict path_parameters: Path Parameters
+        :param dict stage_variables: API Gateway Stage Variables
+        :param str path: Path of the request
+        """
+
+        if not isinstance(query_string_params, dict) and query_string_params is not None:
+            raise TypeError("'query_string_params' must be of type dict or None")
+
+        if not isinstance(headers, dict) and headers is not None:
+            raise TypeError("'headers' must be of type dict or None")
+
+        if not isinstance(path_parameters, dict) and path_parameters is not None:
+            raise TypeError("'path_parameters' must be of type dict or None")
+
+        if not isinstance(stage_variables, dict) and stage_variables is not None:
+            raise TypeError("'stage_variables' must be of type dict or None")
+
+        self.http_method = http_method
+        self.method_arn = method_arn
+        self.resource = resource
+        self.request_context = request_context
+        self.query_string_params = query_string_params
+        self.headers = headers
+        self.path_parameters = path_parameters
+        self.stage_variables = stage_variables
+        self.path = path
+
+    def to_dict(self):
+        """
+        Constructs an dictionary representation of the ApiGatewayLambdaEvent Object to be used in serializing to JSON
+
+        :return: dict representing the object
+        """
+        request_context_dict = {}
+        if self.request_context:
+            request_context_dict = self.request_context.to_dict()
+
+        json_dict = {
+            "type": "REQUEST",
+            "httpMethod": self.http_method,
+            "methodArn": self.method_arn,
+            "resource": self.resource,
+            "requestContext": request_context_dict,
+            "queryStringParameters": dict(self.query_string_params) if self.query_string_params else None,
+            "headers": dict(self.headers) if self.headers else None,
+            "pathParameters": dict(self.path_parameters) if self.path_parameters else None,
+            "stageVariables": dict(self.stage_variables) if self.stage_variables else None,
+            "path": self.path,
+        }
+
+        return json_dict
