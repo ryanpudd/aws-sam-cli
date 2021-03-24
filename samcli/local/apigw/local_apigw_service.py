@@ -279,31 +279,11 @@ class LocalApigwService(BaseLocalService):
             headers = Headers(cors_headers)
             return self.service_response("", headers, 200)
 
-        try:
-            # the Lambda Event 2.0 is only used for the HTTP API gateway with defined payload format version equal 2.0
-            # or none, as the default value to be used is 2.0
-            # https://docs.aws.amazon.com/apigatewayv2/latest/api-reference/apis-apiid-integrations.html#apis-apiid-integrations-prop-createintegrationinput-payloadformatversion
-            if route.event_type == Route.HTTP and route.payload_format_version in [None, "2.0"]:
-                route_key = self._v2_route_key(method, endpoint, route.is_default_route)
-                event = self._construct_v_2_0_event_http(
-                    request,
-                    self.port,
-                    self.api.binary_media_types,
-                    self.api.stage_name,
-                    self.api.stage_variables,
-                    route_key,
-                )
-            else:
-                event = self._construct_v_1_0_event(
-                    request, self.port, self.api.binary_media_types, self.api.stage_name, self.api.stage_variables
-                )
-        except UnicodeDecodeError:
-            return ServiceErrorResponses.lambda_failure_response()
-
         stdout_stream = io.BytesIO()
         stdout_stream_writer = StreamWriter(stdout_stream, self.is_debugging)
 
         # TODO - Migrate security handling to another function
+        request_context = None
         if len(route.authorizers) > 0:
             try:
                 auth_event = self._construct_auth_event(
@@ -317,8 +297,9 @@ class LocalApigwService(BaseLocalService):
             except UnicodeDecodeError:
                 return ServiceErrorResponses.lambda_failure_response()
 
-            authorizer_response = None
+            
             try:
+                authorizer_response = None
                 for authorizer in route.authorizers:
                     for name, auth_function_name in authorizer.items():
                         self.lambda_runner.invoke(
@@ -340,11 +321,41 @@ class LocalApigwService(BaseLocalService):
                         # TODO - Move to a function? - maybe this whole block?
                         policy_doc = authorizer_response_json.get("policyDocument", {})
                         policy_statements = policy_doc.get("Statement", [])
+                        if len(policy_statements) == 0:
+                            return ServiceErrorResponses.unauthorized()
+
                         for statement in policy_statements:
                             if statement.get("Effect", "Deny") == "Deny":
                                 return ServiceErrorResponses.unauthorized()
+
+                        if 'context' in authorizer_response_json:
+                            request_context = {
+                                "authorizer": authorizer_response_json['context']
+                            }
             except FunctionNotFound:
                 return ServiceErrorResponses.lambda_not_found_response()
+
+        try:
+            # the Lambda Event 2.0 is only used for the HTTP API gateway with defined payload format version equal 2.0
+            # or none, as the default value to be used is 2.0
+            # https://docs.aws.amazon.com/apigatewayv2/latest/api-reference/apis-apiid-integrations.html#apis-apiid-integrations-prop-createintegrationinput-payloadformatversion
+            if route.event_type == Route.HTTP and route.payload_format_version in [None, "2.0"]:
+                route_key = self._v2_route_key(method, endpoint, route.is_default_route)
+                event = self._construct_v_2_0_event_http(
+                    request,
+                    self.port,
+                    self.api.binary_media_types,
+                    self.api.stage_name,
+                    self.api.stage_variables,
+                    route_key,
+                    request_context
+                )
+            else:
+                event = self._construct_v_1_0_event(
+                    request, self.port, self.api.binary_media_types, self.api.stage_name, self.api.stage_variables, request_context
+                )
+        except UnicodeDecodeError:
+            return ServiceErrorResponses.lambda_failure_response()
 
         stdout_stream = io.BytesIO()
         stdout_stream_writer = StreamWriter(stdout_stream, self.is_debugging)
@@ -605,7 +616,7 @@ class LocalApigwService(BaseLocalService):
         return processed_headers
 
     @staticmethod
-    def _construct_v_1_0_event(flask_request, port, binary_types, stage_name=None, stage_variables=None):
+    def _construct_v_1_0_event(flask_request, port, binary_types, stage_name=None, stage_variables=None, request_context_additional=None):
         """
         Helper method that constructs the Event to be passed to Lambda
 
@@ -645,6 +656,7 @@ class LocalApigwService(BaseLocalService):
             path=endpoint,
             protocol=protocol,
             domain_name=host,
+            additional=request_context_additional
         )
 
         headers_dict, multi_value_headers_dict = LocalApigwService._event_headers(flask_request, port)
@@ -670,7 +682,7 @@ class LocalApigwService(BaseLocalService):
 
     @staticmethod
     def _construct_v_2_0_event_http(
-        flask_request, port, binary_types, stage_name=None, stage_variables=None, route_key=None
+        flask_request, port, binary_types, stage_name=None, stage_variables=None, route_key=None, request_context_dict=None
     ):
         """
         Helper method that constructs the Event 2.0 to be passed to Lambda
@@ -702,7 +714,7 @@ class LocalApigwService(BaseLocalService):
         cookies = LocalApigwService._event_http_cookies(flask_request)
         headers = LocalApigwService._event_http_headers(flask_request, port)
         context_http = ContextHTTP(method=method, path=flask_request.path, source_ip=flask_request.remote_addr)
-        context = RequestContextV2(http=context_http, route_key=route_key, stage=stage_name)
+        context = RequestContextV2(http=context_http, route_key=route_key, stage=stage_name, additional=request_context_dict)
         event = ApiGatewayV2LambdaEvent(
             route_key=route_key,
             raw_path=flask_request.path,

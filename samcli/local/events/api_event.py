@@ -80,6 +80,7 @@ class RequestContext:
         path=None,
         protocol=None,
         domain_name=None,
+        additional=None,
         request_time_epoch=int(time()),
         request_time=datetime.utcnow().strftime("%d/%b/%Y:%H:%M:%S +0000"),
     ):
@@ -110,6 +111,7 @@ class RequestContext:
         self.path = path
         self.protocol = protocol
         self.domain_name = domain_name
+        self.additional = additional
         self.request_time_epoch = request_time_epoch
         self.request_time = request_time
 
@@ -137,8 +139,11 @@ class RequestContext:
             "protocol": self.protocol,
             "domainName": self.domain_name,
             "requestTimeEpoch": self.request_time_epoch,
-            "requestTime": self.request_time,
+            "requestTime": self.request_time
         }
+
+        if self.additional is not None:
+            json_dict = {**json_dict, **self.additional}
 
         return json_dict
 
@@ -285,6 +290,7 @@ class RequestContextV2:
         request_id=str(uuid.uuid4()),
         route_key=None,
         stage=None,
+        additional=None
     ):
         """
         Constructs a RequestContext Version 2.
@@ -303,6 +309,7 @@ class RequestContextV2:
         self.request_id = request_id
         self.route_key = route_key
         self.stage = stage
+        self.additional=None
 
     def to_dict(self):
         """
@@ -321,8 +328,11 @@ class RequestContextV2:
             "http": http_dict,
             "requestId": self.request_id,
             "routeKey": self.route_key,
-            "stage": self.stage,
+            "stage": self.stage
         }
+
+        if self.additional is not None:
+            json_dict = {**json_dict, **self.additional}
 
         return json_dict
 
